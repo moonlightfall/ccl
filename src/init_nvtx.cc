@@ -2,11 +2,11 @@
 #include "nvtx.h"
 
 static constexpr const nvtxPayloadEnum_t NvtxEnumRedSchema[] = {
-  {"Sum", ncclSum, 0},
-  {"Product", ncclProd, 0},
-  {"Max", ncclMax, 0},
-  {"Min", ncclMin, 0},
-  {"Avg", ncclAvg, 0}
+  {"Sum", ncclSum},
+  {"Product", ncclProd},
+  {"Max", ncclMax},
+  {"Min", ncclMin},
+  {"Avg", ncclAvg}
 };
 
 // Must be called before the first call to any reduction operation.
@@ -19,8 +19,7 @@ void initNvtxRegisteredEnums() {
     .entries = NvtxEnumRedSchema,
     .numEntries = std::extent<decltype(NvtxEnumRedSchema)>::value,
     .sizeOfEnum = sizeof(ncclRedOp_t),
-    .schemaId = NVTX_PAYLOAD_ENTRY_NCCL_REDOP,
-    .extension = nullptr
+    .schemaId = NVTX_PAYLOAD_ENTRY_NCCL_REDOP
   };
 
   nvtxPayloadEnumRegister(nvtx3::domain::get<nccl_domain>(), &eAttr);

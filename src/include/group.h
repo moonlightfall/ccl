@@ -14,8 +14,7 @@ ncclResult_t ncclGroupErrCheck(ncclResult_t ret);
 void ncclGroupCommJoin(struct ncclComm* comm);
 void ncclGroupCommPreconnect(struct ncclComm* comm);
 ncclResult_t ncclGroupCommLeave(struct ncclComm* comm);
-ncclResult_t ncclGroupJobAbort(struct ncclGroupJob* groupJob);
-ncclResult_t ncclGroupJobComplete(struct ncclGroupJob *groupJob);
+void ncclGroupJobAbort();
 
 typedef ncclResult_t(*ncclInitFunc_t)(ncclComm_t* newcomm, int ndev, ncclUniqueId commId, int myrank, int cudaDev);
 
@@ -35,12 +34,9 @@ struct ncclAsyncJob {
   void(*undo)(struct ncclAsyncJob*);
   void(*destructor)(void*);
   ncclGroupJobState_t state;
-  uint32_t* abortFlag; /* point to comm abortFlag */
-  uint32_t* abortFlagDev; /* point to comm abortFlagDev */
-  uint32_t* childAbortFlag; /* point to child abortFlag */
-  uint32_t* childAbortFlagDev; /* point to child abortFlagDev */
+  volatile uint32_t *abortFlag; /* point to comm abortFlag */
+  volatile uint32_t *childAbortFlag; /* point to child abortFlag */
   ncclComm_t comm;
-  int destroyFlag;
 };
 
 ncclResult_t ncclAsyncLaunch(
@@ -55,14 +51,13 @@ struct ncclGroupJob {
   struct ncclComm **groupCommHeadPtr;
   struct ncclComm **groupCommPreconnectHeadPtr;
   ncclResult_t *groupErrorPtr;
-  bool *abortFlagPtr;
-  int *groupBlockingPtr;
+  volatile bool *abortFlagPtr;
   struct ncclIntruQueue<struct ncclAsyncJob, &ncclAsyncJob::next> *asyncJobsPtr;
-  bool initialized;
+  bool doneFlag;
 };
 
 ncclResult_t ncclGroupStartInternal();
-ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo = NULL);
+ncclResult_t ncclGroupEndInternal();
 ncclResult_t ncclAsyncJobComplete(struct ncclAsyncJob* job);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -92,6 +87,14 @@ static inline ncclResult_t groupJobComplete(struct ncclGroupJob* job) {
 }
 
 inline ncclResult_t ncclGroupStartInternal() {
+  /* if previous group launch does not complete, don't launch this one. */
+  if (ncclGroupJobMainPtr != NULL) {
+    if (__atomic_load_n(&ncclGroupJobMainPtr->doneFlag, __ATOMIC_ACQUIRE) == false) {
+      return ncclInvalidUsage;
+    } else {
+      NCCLCHECK(groupJobComplete(ncclGroupJobMainPtr));
+    }
+  }
   ncclGroupDepth++;
   return ncclSuccess;
 }
@@ -117,10 +120,6 @@ inline void ncclGroupCommJoin(struct ncclComm* comm) {
     // Comms gets a new memory stack scope upon joining. Each task batched for
     // this comm is allocated there.
     ncclMemoryStackPush(&comm->memScoped);
-    // Initialize planner
-    ncclKernelPlanner::Peer* tmp = comm->planner.peers;
-    memset(&comm->planner, 0, sizeof(comm->planner));
-    comm->planner.peers = tmp;
   }
 
   ncclGroupBlocking = comm->config.blocking;

@@ -8,30 +8,24 @@
 #include "nccl_net.h"
 #include <stdlib.h>
 #include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-#include <strings.h>
 #include <sys/syscall.h>
-#include <chrono>
-#include "param.h"
 
 int ncclDebugLevel = -1;
 static int pid = -1;
 static char hostname[1024];
 thread_local int ncclDebugNoWarn = 0;
 char ncclLastError[1024] = ""; // Global string for the last error in human readable form
-static uint64_t ncclDebugMask = NCCL_INIT | NCCL_BOOTSTRAP | NCCL_ENV; // Default debug sub-system mask is INIT and ENV
+uint64_t ncclDebugMask = NCCL_INIT|NCCL_ENV; // Default debug sub-system mask is INIT and ENV
 FILE *ncclDebugFile = stdout;
-static pthread_mutex_t ncclDebugLock = PTHREAD_MUTEX_INITIALIZER;
-static std::chrono::steady_clock::time_point ncclEpoch;
-static bool ncclWarnSetDebugInfo = false;
+pthread_mutex_t ncclDebugLock = PTHREAD_MUTEX_INITIALIZER;
+std::chrono::steady_clock::time_point ncclEpoch;
 
 static __thread int tid = -1;
 
-static void ncclDebugInit() {
+void ncclDebugInit() {
   pthread_mutex_lock(&ncclDebugLock);
   if (ncclDebugLevel != -1) { pthread_mutex_unlock(&ncclDebugLock); return; }
-  const char* nccl_debug = ncclGetEnv("NCCL_DEBUG");
+  const char* nccl_debug = getenv("NCCL_DEBUG");
   int tempNcclDebugLevel = -1;
   if (nccl_debug == NULL) {
     tempNcclDebugLevel = NCCL_LOG_NONE;
@@ -51,7 +45,7 @@ static void ncclDebugInit() {
    * This can be a comma separated list such as INIT,COLL
    * or ^INIT,COLL etc
    */
-  const char* ncclDebugSubsysEnv = ncclGetEnv("NCCL_DEBUG_SUBSYS");
+  char* ncclDebugSubsysEnv = getenv("NCCL_DEBUG_SUBSYS");
   if (ncclDebugSubsysEnv != NULL) {
     int invert = 0;
     if (ncclDebugSubsysEnv[0] == '^') { invert = 1; ncclDebugSubsysEnv++; }
@@ -84,14 +78,6 @@ static void ncclDebugInit() {
         mask = NCCL_PROXY;
       } else if (strcasecmp(subsys, "NVLS") == 0) {
         mask = NCCL_NVLS;
-      } else if (strcasecmp(subsys, "BOOTSTRAP") == 0) {
-        mask = NCCL_BOOTSTRAP;
-      } else if (strcasecmp(subsys, "REG") == 0) {
-        mask = NCCL_REG;
-      } else if (strcasecmp(subsys, "PROFILE") == 0) {
-        mask = NCCL_PROFILE;
-      } else if (strcasecmp(subsys, "RAS") == 0) {
-        mask = NCCL_RAS;
       } else if (strcasecmp(subsys, "ALL") == 0) {
         mask = NCCL_ALL;
       }
@@ -103,15 +89,6 @@ static void ncclDebugInit() {
     free(ncclDebugSubsys);
   }
 
-  const char* ncclWarnSetDebugInfoEnv = ncclGetEnv("NCCL_WARN_ENABLE_DEBUG_INFO");
-  if (ncclWarnSetDebugInfoEnv != NULL && strlen(ncclWarnSetDebugInfoEnv) > 0) {
-    int64_t value;
-    errno = 0;
-    value = strtoll(ncclWarnSetDebugInfoEnv, NULL, 0);
-    if (!errno)
-      ncclWarnSetDebugInfo = value;
-  }
-
   // Cache pid and hostname
   getHostName(hostname, 1024, '.');
   pid = getpid();
@@ -120,12 +97,12 @@ static void ncclDebugInit() {
    * then create the debug file. But don't bother unless the
    * NCCL_DEBUG level is > VERSION
    */
-  const char* ncclDebugFileEnv = ncclGetEnv("NCCL_DEBUG_FILE");
+  const char* ncclDebugFileEnv = getenv("NCCL_DEBUG_FILE");
   if (tempNcclDebugLevel > NCCL_LOG_VERSION && ncclDebugFileEnv != NULL) {
     int c = 0;
     char debugFn[PATH_MAX+1] = "";
     char *dfn = debugFn;
-    while (ncclDebugFileEnv[c] != '\0' && (dfn - debugFn) < PATH_MAX) {
+    while (ncclDebugFileEnv[c] != '\0' && c < PATH_MAX) {
       if (ncclDebugFileEnv[c++] != '%') {
         *dfn++ = ncclDebugFileEnv[c-1];
         continue;
@@ -135,23 +112,15 @@ static void ncclDebugInit() {
           *dfn++ = '%';
           break;
         case 'h': // %h = hostname
-          dfn += snprintf(dfn, PATH_MAX + 1 - (dfn - debugFn), "%s", hostname);
+          dfn += snprintf(dfn, PATH_MAX, "%s", hostname);
           break;
         case 'p': // %p = pid
-          dfn += snprintf(dfn, PATH_MAX + 1 - (dfn - debugFn), "%d", pid);
+          dfn += snprintf(dfn, PATH_MAX, "%d", pid);
           break;
         default: // Echo everything we don't understand
           *dfn++ = '%';
-          if ((dfn - debugFn) < PATH_MAX) {
-            *dfn++ = ncclDebugFileEnv[c-1];
-          }
+          *dfn++ = ncclDebugFileEnv[c-1];
           break;
-      }
-      if ((dfn - debugFn) > PATH_MAX) {
-        // snprintf wanted to overfill the buffer: set dfn to the end
-        // of the buffer (for null char) and it will naturally exit
-        // the loop.
-        dfn = debugFn + PATH_MAX;
       }
     }
     *dfn = '\0';
@@ -192,9 +161,9 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
     tid = syscall(SYS_gettid);
   }
 
-  int cudaDev = 0;
+  int cudaDev;
   if (!(level == NCCL_LOG_TRACE && flags == NCCL_CALL)) {
-    (void)cudaGetDevice(&cudaDev);
+    cudaGetDevice(&cudaDev);
   }
 
   char buffer[1024];
@@ -202,7 +171,6 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
   if (level == NCCL_LOG_WARN) {
     len = snprintf(buffer, sizeof(buffer), "\n%s:%d:%d [%d] %s:%d NCCL WARN ",
                    hostname, pid, tid, cudaDev, filefunc, line);
-    if (ncclWarnSetDebugInfo) ncclDebugLevel = NCCL_LOG_INFO;
   } else if (level == NCCL_LOG_INFO) {
     len = snprintf(buffer, sizeof(buffer), "%s:%d:%d [%d] NCCL INFO ", hostname, pid, tid, cudaDev);
   } else if (level == NCCL_LOG_TRACE && flags == NCCL_CALL) {
@@ -214,30 +182,14 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
                    hostname, pid, tid, cudaDev, timestamp, filefunc, line);
   }
 
-  va_list vargs;
-  va_start(vargs, fmt);
-  len += vsnprintf(buffer+len, sizeof(buffer)-len, fmt, vargs);
-  va_end(vargs);
-  // vsnprintf may return len >= sizeof(buffer) in the case of a truncated output.
-  // Rewind len so that we can replace the final \0 by \n
-  if (len >= sizeof(buffer)) len = sizeof(buffer)-1;
   if (len) {
+    va_list vargs;
+    va_start(vargs, fmt);
+    len += vsnprintf(buffer+len, sizeof(buffer)-len, fmt, vargs);
+    va_end(vargs);
     buffer[len++] = '\n';
     fwrite(buffer, 1, len, ncclDebugFile);
   }
-}
-
-NCCL_API(void, ncclResetDebugInit);
-void ncclResetDebugInit() {
-  // Cleans up from a previous ncclDebugInit() and reruns.
-  // Use this after changing NCCL_DEBUG and related parameters in the environment.
-  __atomic_load_n(&ncclDebugLevel, __ATOMIC_ACQUIRE);
-  if (ncclDebugFile != stdout) {
-    fclose(ncclDebugFile);
-    ncclDebugFile = stdout;
-  }
-  ncclDebugLevel = -1;
-  ncclDebugInit();
 }
 
 NCCL_PARAM(SetThreadName, "SET_THREAD_NAME", 0);

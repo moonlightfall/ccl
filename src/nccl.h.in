@@ -12,9 +12,6 @@
 #if CUDART_VERSION >= 11000
 #include <cuda_bf16.h>
 #endif
-#if CUDART_VERSION >= 11080
-#include <cuda_fp8.h>
-#endif
 
 #define NCCL_MAJOR ${nccl:Major}
 #define NCCL_MINOR ${nccl:Minor}
@@ -50,7 +47,6 @@ typedef enum { ncclSuccess                 =  0,
 #define NCCL_CONFIG_UNDEF_INT INT_MIN
 #define NCCL_CONFIG_UNDEF_PTR NULL
 #define NCCL_SPLIT_NOCOLOR -1
-#define NCCL_UNDEF_FLOAT -1.0f
 
 /* Communicator configuration. Users can assign value to attributes to specify the
  * behavior of a communicator. */
@@ -81,32 +77,6 @@ typedef struct ncclConfig_v21700 {
   NCCL_CONFIG_UNDEF_PTR,                    /* netName */               \
   NCCL_CONFIG_UNDEF_INT                     /* splitShare */            \
 }
-
-/* This struct will be used by ncclGroupSimulateEnd() API to query information about simulation. */
-typedef struct ncclSimInfo_v22200 {
-    size_t size;
-    unsigned int magic;
-    unsigned int version;
-    float estimatedTime;
-} ncclSimInfo_t;
-
-/* NCCL_SIM_INFO_INITIALIZER must be assigned to initialize simInfo structure when it is created.
- * Not initialized simInfo will result in NCCL error. */
-#define NCCL_SIM_INFO_INITIALIZER {                                         \
-  sizeof(ncclSimInfo_t),                            /* size */              \
-  0x74685283,                                       /* magic */             \
-  NCCL_VERSION(NCCL_MAJOR, NCCL_MINOR, NCCL_PATCH), /* version */           \
-  NCCL_UNDEF_FLOAT                                  /* estimated time */    \
-}
-
-/* NCCL malloc and free function for all types of NCCL optimizations
- * (e.g. user buffer registration). The actual allocated size might
- * be larger than requested due to granularity requirement. */
-ncclResult_t  ncclMemAlloc(void** ptr, size_t size);
-ncclResult_t pncclMemAlloc(void** ptr, size_t size);
-
-ncclResult_t  ncclMemFree(void *ptr);
-ncclResult_t pncclMemFree(void *ptr);
 
 /* Return the NCCL_VERSION_CODE of the NCCL library in the supplied integer.
  * This integer is coded with the MAJOR, MINOR and PATCH level of the
@@ -171,24 +141,15 @@ ncclResult_t pncclCommAbort(ncclComm_t comm);
 ncclResult_t  ncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newcomm, ncclConfig_t* config);
 ncclResult_t pncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newcomm, ncclConfig_t* config);
 
-/* Creates a new communicator (multi thread/process version), similar to ncclCommInitRankConfig.
- * Allows to use more than one ncclUniqueId (up to one per rank), indicated by nId, to accelerate the init operation.
- * The number of ncclUniqueIds and their order must be the same for every rank.
- */
-ncclResult_t ncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myrank, int nId, ncclUniqueId* commIds, ncclConfig_t* config);
-ncclResult_t pncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myrank, int nId, ncclUniqueId* commIds, ncclConfig_t* config);
-
 /* Returns a string for each error code. */
 const char*  ncclGetErrorString(ncclResult_t result);
 const char* pncclGetErrorString(ncclResult_t result);
 
-/* Returns a human-readable message of the last error that occurred. */
+/* Returns a human-readable message of the last error that occurred.
+ * comm is currently unused and can be set to NULL
+ */
 const char*  ncclGetLastError(ncclComm_t comm);
 const char* pncclGetLastError(ncclComm_t comm);
-
-/* Reload environment variables that determine logging. */
-void  ncclResetDebugInit();
-void pncclResetDebugInit();
 
 /* Checks whether the comm has encountered any asynchronous errors */
 ncclResult_t  ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError);
@@ -205,14 +166,6 @@ ncclResult_t pncclCommCuDevice(const ncclComm_t comm, int* device);
 /* Returns the user-ordered "rank" associated with the communicator. */
 ncclResult_t  ncclCommUserRank(const ncclComm_t comm, int* rank);
 ncclResult_t pncclCommUserRank(const ncclComm_t comm, int* rank);
-
-/* Register CUDA buffer for zero-copy operation */
-ncclResult_t  ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
-ncclResult_t pncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
-
-/* Deregister CUDA buffer */
-ncclResult_t  ncclCommDeregister(const ncclComm_t comm, void* handle);
-ncclResult_t pncclCommDeregister(const ncclComm_t comm, void* handle);
 
 /* Reduction operation selector */
 typedef enum { ncclNumOps_dummy = 5 } ncclRedOp_dummy_t;
@@ -243,10 +196,12 @@ typedef enum { ncclInt8       = 0, ncclChar       = 0,
                ncclFloat16    = 6, ncclHalf       = 6,
                ncclFloat32    = 7, ncclFloat      = 7,
                ncclFloat64    = 8, ncclDouble     = 8,
+#if defined(__CUDA_BF16_TYPES_EXIST__)
                ncclBfloat16   = 9,
-               ncclFloat8e4m3 = 10,
-               ncclFloat8e5m2 = 11,
-               ncclNumTypes   = 12
+               ncclNumTypes   = 10
+#else
+               ncclNumTypes   = 9
+#endif
 } ncclDataType_t;
 
 /* ncclScalarResidence_t: Location and dereferencing logic for scalar arguments. */
@@ -461,14 +416,6 @@ ncclResult_t pncclGroupStart();
  */
 ncclResult_t  ncclGroupEnd();
 ncclResult_t pncclGroupEnd();
-
-/*
- * Group Simulate End
- *
- * Simulate a ncclGroupEnd() call and return NCCL's simulation info in a struct.
- */
-ncclResult_t  ncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
-ncclResult_t pncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
 
 #ifdef __cplusplus
 } // end extern "C"

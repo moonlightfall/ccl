@@ -38,17 +38,21 @@
 
 #include <errno.h>
 // Check system calls
-#define SYSCHECK(statement, name) do { \
+#define SYSCHECK(call, name) do { \
   int retval; \
-  SYSCHECKSYNC((statement), name, retval); \
+  SYSCHECKVAL(call, name, retval); \
+} while (false)
+
+#define SYSCHECKVAL(call, name, retval) do { \
+  SYSCHECKSYNC(call, name, retval); \
   if (retval == -1) { \
-    WARN("Call to " name " failed: %s", strerror(errno)); \
+    WARN("Call to " name " failed : %s", strerror(errno)); \
     return ncclSystemError; \
   } \
 } while (false)
 
-#define SYSCHECKSYNC(statement, name, retval) do { \
-  retval = (statement); \
+#define SYSCHECKSYNC(call, name, retval) do { \
+  retval = call; \
   if (retval == -1 && (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN)) { \
     INFO(NCCL_ALL,"Call to " name " returned %s, retrying", strerror(errno)); \
   } else { \
@@ -56,33 +60,14 @@
   } \
 } while(true)
 
-#define SYSCHECKGOTO(statement, name, RES, label) do { \
-  int retval; \
-  SYSCHECKSYNC((statement), name, retval); \
-  if (retval == -1) { \
-    WARN("Call to " name " failed: %s", strerror(errno)); \
-    RES = ncclSystemError; \
+#define SYSCHECKGOTO(statement, RES, label) do { \
+  if ((statement) == -1) {    \
+    /* Print the back trace*/ \
+    RES = ncclSystemError;    \
+    INFO(NCCL_ALL,"%s:%d -> %d (%s)", __FILE__, __LINE__, RES, strerror(errno));    \
     goto label; \
   } \
-} while (0)
-
-// Pthread calls don't set errno and never return EINTR.
-#define PTHREADCHECK(statement, name) do { \
-  int retval = (statement); \
-  if (retval != 0) { \
-    WARN("Call to " name " failed: %s", strerror(retval)); \
-    return ncclSystemError; \
-  } \
-} while (0)
-
-#define PTHREADCHECKGOTO(statement, name, RES, label) do { \
-  int retval = (statement); \
-  if (retval != 0) { \
-    WARN("Call to " name " failed: %s", strerror(retval)); \
-    RES = ncclSystemError; \
-    goto label; \
-  } \
-} while (0)
+} while (0);
 
 #define NEQCHECK(statement, value) do {   \
   if ((statement) != value) {             \
@@ -90,7 +75,7 @@
     INFO(NCCL_ALL,"%s:%d -> %d (%s)", __FILE__, __LINE__, ncclSystemError, strerror(errno));    \
     return ncclSystemError;     \
   }                             \
-} while (0)
+} while (0);
 
 #define NEQCHECKGOTO(statement, value, RES, label) do { \
   if ((statement) != value) { \
@@ -99,7 +84,7 @@
     INFO(NCCL_ALL,"%s:%d -> %d (%s)", __FILE__, __LINE__, RES, strerror(errno));    \
     goto label; \
   } \
-} while (0)
+} while (0);
 
 #define EQCHECK(statement, value) do {    \
   if ((statement) == value) {             \
@@ -107,7 +92,7 @@
     INFO(NCCL_ALL,"%s:%d -> %d (%s)", __FILE__, __LINE__, ncclSystemError, strerror(errno));    \
     return ncclSystemError;     \
   }                             \
-} while (0)
+} while (0);
 
 #define EQCHECKGOTO(statement, value, RES, label) do { \
   if ((statement) == value) { \
@@ -116,7 +101,7 @@
     INFO(NCCL_ALL,"%s:%d -> %d (%s)", __FILE__, __LINE__, RES, strerror(errno));    \
     goto label; \
   } \
-} while (0)
+} while (0);
 
 // Propagate errors up
 #define NCCLCHECK(call) do { \
@@ -126,7 +111,7 @@
     if (ncclDebugNoWarn == 0) INFO(NCCL_ALL,"%s:%d -> %d", __FILE__, __LINE__, RES);    \
     return RES; \
   } \
-} while (0)
+} while (0);
 
 #define NCCLCHECKGOTO(call, RES, label) do { \
   RES = call; \
@@ -135,27 +120,27 @@
     if (ncclDebugNoWarn == 0) INFO(NCCL_ALL,"%s:%d -> %d", __FILE__, __LINE__, RES);    \
     goto label; \
   } \
-} while (0)
+} while (0);
 
 #define NCCLWAIT(call, cond, abortFlagPtr) do {         \
-  uint32_t* tmpAbortFlag = (abortFlagPtr);     \
+  volatile uint32_t* tmpAbortFlag = (abortFlagPtr);     \
   ncclResult_t RES = call;                \
   if (RES != ncclSuccess && RES != ncclInProgress) {               \
     if (ncclDebugNoWarn == 0) INFO(NCCL_ALL,"%s:%d -> %d", __FILE__, __LINE__, RES);    \
     return ncclInternalError;             \
   }                                       \
-  if (__atomic_load(tmpAbortFlag, __ATOMIC_ACQUIRE)) NEQCHECK(*tmpAbortFlag, 0); \
-} while (!(cond))
+  if (tmpAbortFlag) NEQCHECK(*tmpAbortFlag, 0); \
+} while (!(cond));
 
 #define NCCLWAITGOTO(call, cond, abortFlagPtr, RES, label) do { \
-  uint32_t* tmpAbortFlag = (abortFlagPtr);             \
+  volatile uint32_t* tmpAbortFlag = (abortFlagPtr);             \
   RES = call;                             \
   if (RES != ncclSuccess && RES != ncclInProgress) {               \
     if (ncclDebugNoWarn == 0) INFO(NCCL_ALL,"%s:%d -> %d", __FILE__, __LINE__, RES);    \
     goto label;                           \
   }                                       \
-  if (__atomic_load(tmpAbortFlag, __ATOMIC_ACQUIRE)) NEQCHECKGOTO(*tmpAbortFlag, 0, RES, label); \
-} while (!(cond))
+  if (tmpAbortFlag) NEQCHECKGOTO(*tmpAbortFlag, 0, RES, label); \
+} while (!(cond));
 
 #define NCCLCHECKTHREAD(a, args) do { \
   if (((args)->ret = (a)) != ncclSuccess && (args)->ret != ncclInProgress) { \
